@@ -39,6 +39,9 @@ async def health():
 
 
 # ── Hop-by-hop headers that MUST NOT be forwarded ─────────────────────────────
+# content-encoding is also stripped from upstream responses because httpx
+# automatically decompresses the body — forwarding the header would cause
+# clients (e.g. ccd-cli / Bun) to try to decompress already-raw bytes → ZlibError.
 
 _HOP_BY_HOP = frozenset([
     "connection",
@@ -51,6 +54,7 @@ _HOP_BY_HOP = frozenset([
     "upgrade",
     "host",
     "content-length",
+    "content-encoding",  # httpx decompresses; never re-announce compression
 ])
 
 
@@ -65,11 +69,15 @@ async def relay(request: Request, full_path: str):
 
     # Forward all headers except hop-by-hop.
     # Crucially: x-api-key, anthropic-version, anthropic-beta, authorization,
-    # content-type, accept, accept-encoding, user-agent are all passed through.
+    # content-type, accept, user-agent are all passed through.
+    # accept-encoding is overridden to "identity" so Anthropic returns raw
+    # (uncompressed) bytes — httpx would decompress but still forward the
+    # Content-Encoding header, causing ZlibError in Bun/ccd-cli.
     forward_headers = {
         k: v for k, v in request.headers.items()
-        if k.lower() not in _HOP_BY_HOP
+        if k.lower() not in _HOP_BY_HOP and k.lower() != "accept-encoding"
     }
+    forward_headers["accept-encoding"] = "identity"  # no compression from upstream
 
     body = await request.body()
 
